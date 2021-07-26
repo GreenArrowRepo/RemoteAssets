@@ -21,4 +21,646 @@
  */
 //# sourceMappingURL=editor-components-bundle.js.map
 
+var wastebinSpawner = null;
+var floorHeight = 0;
+
+/**
+@brief Spawns wastebins at the same location as this mesh on click
+
+Clicks are detected via `select` events, as in immersive AR sessions,
+we don't have touch events.
+
+To spawn the wastebin at the location of the AR hit-test, this component
+is attached to the same object as the `hit-test-location` object.
+That results in `this.object` having the same location as the hit-test
+result.
+*/
+WL.registerComponent('wastebin-spawner', {
+    binMesh: {type: WL.Type.Mesh},
+    binMaterial: {type: WL.Type.Material},
+    spawnAnimation: {type: WL.Type.Animation},
+    maxWastebins: {type: WL.Type.Int, default: 3},
+    particles: {type: WL.Type.Object},
+}, {
+    start: function() {
+        WL.onXRSessionStart.push(this.xrSessionStart.bind(this));
+        this.hitTest = this.object.getComponent('hit-test-location');
+        this.wastebins = [];
+
+        wastebinSpawner = this;
+    },
+    update: function(dt) {
+        if(!this.hitTest || !this.hitTest.visible) return;
+        if(this.wastebins.length >= this.maxWastebins) return;
+
+        updateScore("Place a\nWastebin");
+    },
+    onClick: function(e) {
+        if(this.wastebins.length >= this.maxWastebins) return;
+        /* Only spawn object if cursor is visible */
+        if(this.hitTest && !this.hitTest.visible) return;
+
+        const obj = WL.scene.addObject();
+        obj.transformLocal.set(this.object.transformWorld);
+
+        const pos = [0, 0, 0];
+        this.object.getTranslationWorld(pos);
+        /* Make sure balls and confetti land on the floor */
+        floorHeight = pos[1];
+
+        const mesh = obj.addComponent('mesh');
+        mesh.mesh = this.binMesh;
+        mesh.material = this.binMaterial;
+        mesh.active = true;
+
+        if(this.spawnAnimation) {
+            const anim = obj.addComponent('animation');
+            anim.playCount = 1;
+            anim.animation = this.spawnAnimation;
+            anim.active = true;
+            anim.play();
+        }
+
+        /* Add scoring trigger */
+        const trigger = WL.scene.addObject(obj);
+        const col = trigger.addComponent('collision');
+        col.collider = WL.Collider.Sphere;
+        col.extents[0] = 0.1;
+        col.group = (1 << 0);
+        col.active = true;
+        trigger.translate([0, 0.4, 0]);
+        trigger.addComponent('score-trigger', {
+            particles: this.particles
+        });
+
+        obj.setDirty();
+
+        this.wastebins.push(obj);
+
+        if(this.wastebins.length == this.maxWastebins) {
+            updateScore("Swipe to\nthrow");
+            paperBallSpawner.getComponent('mesh').active = true;
+            paperBallSpawner.getComponent('paperball-spawner').active = true;
+            /* Hide cursor */
+            this.object.getComponent('mesh').active = false;
+        }
+    },
+    onActivate: function() {
+        if(WL.xrSession) {
+            WL.xrSession.addEventListener('select', this.onClick.bind(this));
+        }
+    },
+    xrSessionStart: function(session) {
+        if(this.active) {
+            session.addEventListener('select', this.onClick.bind(this));
+        }
+    },
+});
+
+var paperBallSpawner = null;
+/**
+@brief Spawns paper balls at the component's object's location
+
+During WebXR immersive-ar sessions, we do not have access to
+touch or click events. The only way to retrieve touch locations
+is through the `select`, `selectstart` and `selectend` events.
+These events report location of the event in `[-1.0, 1.0]` on
+both axis.
+
+A swipe is determined by the difference in the position and time
+from `selectstart` to `selectend` event.
+The faster and the longer the swipe, the more force will be applied
+for the throw.
+
+After every throw, the main paper ball mesh in front of the camera
+will be hidden for a short duration and reappears with a new
+random rotation to hide the fact that it's the same mesh over and over.
+*/
+WL.registerComponent('paperball-spawner', {
+    paperballMesh: {type: WL.Type.Mesh},
+    paperballMaterial: {type: WL.Type.Material},
+    spawnAnimation: {type: WL.Type.Animation},
+    swipeSensitivity: {type: WL.Type.Float, default: 1.0},
+    maxPapers: {type: WL.Type.Int, default: 32},
+    debug: {type: WL.Type.Bool, default: false},
+}, {
+    start: function() {
+        /* We can only bind the selectstart/select end events
+         * when the session started */
+        WL.onXRSessionStart.push(this.xrSessionStart.bind(this));
+        this.start = new Float32Array(2);
+
+        this.paperBalls = [];
+        this.nextIndex = 0;
+        this.throwCount = 0;
+
+        if(this.debug) {
+            this.active = true;
+            this.object.getComponent('mesh').active = true;
+        }
+
+        paperBallSpawner = this.object;
+    },
+    onTouchDown: function(e) {
+        /* We cannot use .axes directly, as the list is being reused
+         * in the selectend event and would therefore change the value
+         * of this.start */
+        this.start.set(e.inputSource.gamepad.axes);
+        this.startTime = e.timeStamp;
+    },
+
+    update: function(dt) {
+        this.time = (this.time || 0) + dt;
+
+        if(this.debug && this.time > 0.5) {
+            let dir = [0, 0, 0];
+            this.object.getForward(dir);
+            dir[1] += 1;
+            this.throw(dir);
+            this.time = 0;
+        }
+    },
+    onTouchUp: function(e) {
+        const end = e.inputSource.gamepad.axes;
+        const duration = 0.001*(e.timeStamp - this.startTime);
+
+        const dir = [0, 0, -1];
+
+        glMatrix.vec2.sub(dir, end, this.start);
+        /* Screenspace Y is inverted */
+        dir[1] = -dir[1];
+        /* In portrait mode, left-right is shorter */
+        dir[0] *= 0.5;
+
+        const swipeLength = glMatrix.vec2.len(dir); /* [0 - 2] */
+        /* Avoid tapping spawning a ball */
+        if(swipeLength < 0.1) return;
+
+        /* Rotate direction about rotation of the view object */
+        glMatrix.vec3.transformQuat(dir, dir, this.object.parent.transformWorld);
+        glMatrix.vec3.normalize(dir, dir);
+
+        /* Assuming swipe length of 0.5, duration of 200ms, then the right term
+         * evaluates to 0.5/0.2 = 2.5. Times the swipeSensitivity is the
+         * meter per second initial speed of the ball */
+        glMatrix.vec3.scale(dir, dir, this.swipeSensitivity*swipeLength/duration);
+
+        this.throw(dir);
+    },
+    throw: function(dir) {
+        let paper =
+            this.paperBalls.length == this.maxPapers ?
+            this.paperBalls[this.nextIndex] : this.spawnPaper();
+        this.paperBalls[this.nextIndex] = paper;
+
+        this.nextIndex = (this.nextIndex + 1) % this.maxPapers;
+
+        paper.object.transformLocal.set(this.object.transformWorld);
+        paper.object.setDirty();
+        paper.physics.velocity.set(dir);
+        /* Reset scored value which is set in 'score-trigger' component */
+        paper.physics.scored = false;
+        paper.physics.active = true;
+
+        /* New orientation for the next paper */
+        this.object.rotateAxisAngleDegObject([1, 0, 0], Math.random()*180.0);
+        this.object.rotateAxisAngleDegObject([0, 1, 0], Math.random()*180.0);
+        this.object.scale([0, 0, 0]);
+
+        this.canThrow = false;
+        setTimeout(function() {
+            this.object.resetScaling();
+            this.canThrow = true;
+        }.bind(this), 1000);
+
+        /* Important only to update score display to show score
+         * instead of the tutorial after first throw */
+        updateScore(score.toString());
+
+        this.throwCount++;
+        if(this.throwCount == 3) {
+            resetButton.unhide();
+        }
+    },
+    spawnPaper: function() {
+        const obj = WL.scene.addObject();
+
+        const mesh = obj.addComponent('mesh');
+        mesh.mesh = this.paperballMesh;
+        mesh.material = this.paperballMaterial;
+        mesh.active = true;
+
+        if(this.spawnAnimation) {
+            const anim = obj.addComponent('animation');
+            anim.animation = this.spawnAnimation;
+            anim.active = true;
+            anim.play();
+        }
+
+        const col = obj.addComponent('collision');
+        col.shape = WL.Collider.Sphere;
+        col.extents[0] = 0.05;
+        col.group = (1 << 0);
+        col.active = true;
+
+        const physics = obj.addComponent('ball-physics', {
+            bounciness: 0.5,
+            weight: 0.2,
+        });
+        physics.active = true;
+
+        return {
+            object: obj,
+            physics: physics
+        };
+    },
+    onActivate: function() {
+        if(WL.xrSession) {
+            WL.xrSession.addEventListener('selectstart', this.onTouchDown.bind(this));
+            WL.xrSession.addEventListener('selectend', this.onTouchUp.bind(this));
+        }
+    },
+    xrSessionStart: function(session) {
+        /* Only spawn object if cursor is visible */
+        if(this.active) {
+            session.addEventListener('selectstart', this.onTouchDown.bind(this));
+            session.addEventListener('selectend', this.onTouchUp.bind(this));
+        }
+    },
+});
+
+/**
+@brief Ball Physics
+
+Very rudimentary physics with gravity, pseudo-friction, bounciness
+and floor collisions.
+
+Computes velocity and position each frame until the velocity falls
+below a certain threshold, after which the component is deactivated.
+
+This component is also used to attach a "scored" property to track
+already scored paper balls. (See score-trigger and paperball-spawner).
+*/
+WL.registerComponent('ball-physics', {
+    bounciness: {type: WL.Type.Float, default: 0.5},
+    weight: {type: WL.Type.Float, default: 1.0}
+}, {
+    init: function() {
+        this.pos = new Float32Array(3);
+        this.velocity = new Float32Array(3);
+
+        this.collision = this.object.getComponent('collision', 0);
+        if(!this.collision) {
+            console.warn("'ball-physics' component on object", this.object.name, "requires a collision component");
+        }
+    },
+
+    update: function(dt) {
+        /* Remember the last position */
+        this.object.getTranslationWorld(this.pos);
+
+        /* Don't fall through the floor */
+        if(this.pos[1] <= floorHeight + this.collision.extents[0]) {
+            if(Math.abs(this.velocity[0]) <= 0.001) {
+                this.velocity[1] = 0;
+            } else {
+                /* bounce */
+                this.velocity[1] *= -this.bounciness;
+            }
+            /* friction */
+            this.velocity[0] *= 0.5;
+            this.velocity[2] *= 0.5;
+        }
+
+        if(Math.abs(this.velocity[0]) <= 0.01 &&
+           Math.abs(this.velocity[1]) <= 0.01 &&
+           Math.abs(this.velocity[2]) <= 0.01)
+        {
+            /* Deactivating this object preserves performance,
+             * update() will no longer be called */
+            this.active = false;
+            return;
+        }
+
+        /* Apply velocity to position */
+        const tmp = [0, 0, 0];
+        const quat = [0, 0, 0, 0];
+        glMatrix.vec3.scale(tmp, this.velocity, dt);
+        if(this.object.parent) {
+            glMatrix.quat.conjugate(quat, this.object.parent.transformWorld);
+            glMatrix.vec3.transformQuat(tmp, tmp, quat);
+        }
+        this.object.translate(tmp);
+
+        /* Apply gravity to velocity */
+        this.velocity[1] -= this.weight*9.81*dt;
+    },
+});
+
+/* Global function used to update the score display */
+var updateScore = null;
+/**
+@brief Marks an object with text component as "score display"
+
+The center top text object that shows various helpful tutorial
+texts and the score.
+*/
+WL.registerComponent('score-display', {
+}, {
+    init: function() {
+        this.text = this.object.getComponent('text');
+
+        updateScore = function(text) {
+            this.text.text = text;
+        }.bind(this);
+
+        updateScore("");
+        /* Initial text to set after session started */
+        WL.onXRSessionStart.push(function() {
+            updateScore("Slowly scan\narea");
+        });
+    },
+});
+
+var score = 0;
+/**
+@brief Score trigger
+
+Check overlap with paper balls to spawn confetti particles and
+increase the score.
+
+This component is automatically attached to newly spawned wastebins,
+see `wastebin-spawner`.
+*/
+WL.registerComponent('score-trigger', {
+    particles: {type: WL.Type.Object}
+}, {
+    init: function() {
+        this.collision = this.object.getComponent('collision');
+    },
+    update: function(dt) {
+        let overlaps = this.collision.queryOverlaps();
+
+        for(let i = 0; i < overlaps.length; ++i) {
+            let p = overlaps[i].object.getComponent('ball-physics');
+
+            if(p && p.velocity[1] < 0.0 && !p.scored) {
+                p.scored = true;
+                this.particles.transformWorld.set(this.object.transformWorld);
+                this.particles.getComponent('confetti-particles').burst();
+                ++score;
+                updateScore(score.toString());
+
+                /* We don't have collisions with the wastebin, simply
+                 * drop it straight down to avoid it flying through */
+                p.velocity.set([0, -1, 0]);
+            }
+        }
+    },
+});
+
+/**
+@brief Confetti Particle System
+
+Adaptation of the mesh particles example for a confetti effect.
+Manages up to `maxParticles` objects and updates their position
+with very basic physics with gravity, drag and floor collision.
+
+Particle objects are preallocated to avoid a hitch when spawning
+particles the first time. Later, particles are set visible and
+activated when spawned.
+
+To avoid having to update "sleeping" particles, the array of objects
+is sorted into "active" and "inactive" particles. The first
+`this.activeCount` particles are the ones being updated every frame.
+If a inactive particle object becomes active, it is swapped in the
+list with the first inactive particle and becomes active by incremementing
+the `activeCount`.
+*/
+WL.registerComponent('confetti-particles', {
+    /* Mesh for spawned particles */
+    mesh: {type: WL.Type.Mesh, default: null},
+    material0: {type: WL.Type.Material, default: null},
+    material1: {type: WL.Type.Material, default: null},
+    material2: {type: WL.Type.Material, default: null},
+    /* Maximum number of particles, once limit is reached, particles are recycled first-in-first-out. */
+    maxParticles: {type: WL.Type.Int, default: 64},
+    /* Initial speed of emitted particles. */
+    initialSpeed: {type: WL.Type.Float, default: 30},
+    /* Size of a particle */
+    particleScale: {type: WL.Type.Float, default: 0.1},
+
+    particlesPerBurst: {type: WL.Type.Int, default: 32},
+    debug: {type: WL.Type.Bool, default: false},
+}, {
+    init: function() {
+        this.time = 0.0;
+        this.count = 0;
+    },
+    start: function() {
+        this.objects = [];
+        this.velocities = [];
+        this.spins = [];
+        this.time = 2.0;
+
+        this.origin = new Float32Array(3);
+        this.activeCount = 0;
+
+        /* Pre allocate all the particles to avoid hitches during the
+         * first bursts */
+        for(let i = 0; i < this.maxParticles; ++i) {
+            this.velocities[i] = [0, 0, 0];
+            this.spins[i] = [0, 0, 0, 0];
+            let particle = this.objects[i] = {object: WL.scene.addObject(), mesh: null};
+            particle.object.name = "particle" + this.count.toString();
+            particle.mesh = particle.object.addComponent('mesh');
+
+            particle.mesh.mesh = this.mesh;
+            /* Activate component, otherwise it will not show up! */
+            particle.mesh.active = true;
+        }
+    },
+    burst: function() {
+        for(let i = 0; i < this.particlesPerBurst; ++i) this.spawn();
+    },
+    update: function(dt) {
+        this.time = (this.time || 0) + dt;
+        if(this.debug && this.time > 3.0) {
+            this.burst();
+            this.time = 0;
+        }
+
+        /* Target for retrieving particles world locations */
+        let distance = [0, 0, 0];
+        const tmp = [0, 0, 0, 0];
+
+        for(let i = 0; i < this.activeCount; ++i) {
+            let o = this.objects[i];
+            let obj = o.object;
+            /* Get translation first, as object.translate() will mark
+             * the object as dirty, which will cause it to recalculate
+             * obj.transformWorld on access. We want to avoid this and
+             * have it be recalculated in batch at the end of frame
+             * instead */
+            obj.getTranslationWorld(this.origin);
+
+            /* Apply gravity */
+            const vel = this.velocities[i];
+            const spins = this.spins[i];
+
+            if(vel[0] != 0 || vel[1] != 0 || vel[2] != 0) {
+                /* Apply gravity with drag */
+                vel[1] = Math.max(vel[1] - 9.81*dt, -0.75);
+            }
+
+            /* Check if particle would collide */
+            if((this.origin[1] + vel[1]*dt) <= floorHeight + this.particleScale && vel[1] <= 0) {
+                /* Pseudo friction */
+                const frict = 1/(1 - vel[1]);
+                vel[0] = frict*vel[0];
+                vel[2] = frict*vel[2];
+
+                /* Reflect */
+                vel[1] = -0.3*vel[1];
+                if(vel[1] > 0 && vel[1] < 0.1) {
+                    vel[0] = vel[1] = vel[2] = 0;
+                    spins[0] = spins[1] = spins[2] = 0;
+                    spins[3] = 1;
+
+                    /* Rotate particle such that it's flat on the ground */
+                    obj.getUp(tmp);
+                    glMatrix.quat.rotationTo(tmp, tmp, [0, 0, 1]);
+                    obj.rotateObject(tmp);
+
+                    /* swap with last active */
+                    --this.activeCount;
+                    this.swap(i, this.activeCount);
+                    --i;
+                }
+            }
+        }
+
+        for(let i = 0; i < this.activeCount; ++i) {
+            let obj = this.objects[i].object;
+            /* Apply velocity */
+            glMatrix.vec3.scale(distance, this.velocities[i], dt);
+            obj.translate(distance);
+
+            const spins = this.spins[i];
+            if(spins[3] != 1) obj.rotateObject(spins);
+        }
+    },
+
+    swap: function(a, b) {
+        if(b >= this.maxParticles) return;
+        if(a >= this.maxParticles) return;
+        const o = this.objects[a];
+        const vel = this.velocities[a];
+        const spins = this.spins[a];
+
+        this.objects[a] = this.objects[b];
+        this.velocities[a] = this.velocities[b];
+        this.spins[a] = this.spins[b];
+
+        this.objects[b] = o;
+        this.velocities[b] = vel;
+        this.spins[b] = spins;
+    },
+
+    /** Spawn a particle */
+    spawn: function() {
+        let index = this.count % this.maxParticles;
+
+        let particle = this.objects[index];
+        particle.object.resetTransform();
+        particle.object.scale([0.25*this.particleScale, this.particleScale, 0.02*this.particleScale]);
+
+        glMatrix.quat2.getTranslation(this.origin, this.object.transformWorld);
+        particle.object.translate(this.origin);
+
+        /* Choose a random material */
+        particle.mesh.material = [this.material0, this.material1, this.material2][Math.floor(Math.random()*3)];
+
+        this.velocities[index][0] = Math.random() - 0.5;
+        this.velocities[index][1] = Math.random();
+        this.velocities[index][2] = Math.random() - 0.5;
+        glMatrix.vec3.normalize(this.velocities[index], this.velocities[index]);
+
+        this.velocities[index][0] *= 0.20*this.initialSpeed;
+        this.velocities[index][1] *= Math.random(0.2*this.initialSpeed) + 0.8*this.initialSpeed;
+        this.velocities[index][2] *= 0.20*this.initialSpeed;
+
+        glMatrix.quat.fromEuler(this.spins[index],
+            Math.floor(Math.random()*20.0),
+            Math.floor(Math.random()*20.0),
+            Math.floor(Math.random()*20.0));
+        this.count += 1;
+        this.swap(index, this.activeCount);
+        this.activeCount = Math.min(this.activeCount + 1, this.maxParticles);
+    }
+});
+
+var resetButton = null;
+/**
+@brief Button to reset to placing a Wastebin
+
+For WebXR AR sessions, we get the touch events reported through `select`
+on the session. As they are reported in [-1.0, 1.0] range, we simply
+check if the touch in within a range in the bottom right corner of the
+screen.
+*/
+WL.registerComponent('play-again-button', {
+}, {
+    start: function() {
+        WL.onXRSessionStart.push(this.xrSessionStart.bind(this));
+        resetButton = this;
+        this.hide();
+    },
+    restart: function() {
+        for(let i = 0; i < wastebinSpawner.wastebins.length; ++i) {
+            wastebinSpawner.wastebins[i].destroy();
+        }
+        wastebinSpawner.wastebins = [];
+        paperBallSpawner.getComponent('paperball-spawner').throwCount = 0;
+
+        /* Show cursor */
+        wastebinSpawner.object.getComponent('mesh').active = true;
+        /* Hide pall spawner */
+        paperBallSpawner.getComponent('mesh').active = false;
+        paperBallSpawner.getComponent('paperball-spawner').active = false;
+
+        this.hide();
+    },
+
+    hide: function() {
+        this.object.getComponent('text').active = false;
+        this.active = false;
+    },
+
+    unhide: function() {
+        this.object.getComponent('text').active = true;
+        this.active = true;
+    },
+
+    onClick: function(e) {
+        const pos = e.inputSource.gamepad.axes;
+        console.log(pos);
+        /* Test position agains bottom right corner */
+        if(pos[0] > 0.3 && pos[1] > 0.9) {
+            this.restart();
+        }
+    },
+
+    onActivate: function() {
+        if(WL.xrSession) {
+            WL.xrSession.addEventListener('select', this.onClick.bind(this));
+        }
+    },
+    xrSessionStart: function(session) {
+        if(this.active) {
+            session.addEventListener('select', this.onClick.bind(this));
+        }
+    },
+});
+
 //# sourceMappingURL=Wastepaperbin AR-bundle.js.map
