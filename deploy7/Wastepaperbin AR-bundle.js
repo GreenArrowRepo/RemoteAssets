@@ -49,14 +49,7 @@ WL.registerComponent('wastebin-spawner', {
 
         wastebinSpawner = this;
 
-    },
-    update: function(dt) {
-        if(!this.hitTest || !this.hitTest.visible) return;
-        if(this.wastebins.length >= this.maxWastebins) return;
 
-        updateScore("Place a\nWastebin");
-    },
-    onClick: function(e) {
         if(this.wastebins.length >= this.maxWastebins) return;
         /* Only spawn object if cursor is visible */
         if(this.hitTest && !this.hitTest.visible) return;
@@ -105,6 +98,16 @@ WL.registerComponent('wastebin-spawner', {
             /* Hide cursor */
             this.object.getComponent('mesh').active = false;
         }
+
+    },
+    update: function(dt) {
+        if(!this.hitTest || !this.hitTest.visible) return;
+        if(this.wastebins.length >= this.maxWastebins) return;
+
+        updateScore("Place a\nWastebin");
+    },
+    onClick: function(e) {
+        
     },
     onActivate: function() {
         if(WL.xrSession) {
