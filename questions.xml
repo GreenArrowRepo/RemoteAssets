@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="UTF-8" ?>
+<questionss>
+    <q>Which method of the document object finds the object for an element?</q>
+    <option id ="1">getElementById</option>
+    <option id ="2">ans2</option>
+    <option id ="3">ans3</option>
+    <option id ="4">ans4</option>
+    <a>getElementById</a>
+</questionss>
