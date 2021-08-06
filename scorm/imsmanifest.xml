@@ -1,0 +1,42 @@
+<?xml version="1.0" standalone="no" ?>
+<!-- 
+Manifest template to demonstrate the proper XML namespace declarations for
+SCORM 2004 2nd Edition manifests that do not use metadata. 
+
+Provided by Rustici Software - www.scorm.com.
+-->
+<manifest identifier="com.scorm.manifesttemplates.scorm2004.2ndEd.nometadata" version="1" 
+                xmlns="http://www.imsglobal.org/xsd/imscp_v1p1"
+                xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_v1p3" 
+                xmlns:adlseq="http://www.adlnet.org/xsd/adlseq_v1p3"
+                xmlns:adlnav="http://www.adlnet.org/xsd/adlnav_v1p3" 
+                xmlns:imsss="http://www.imsglobal.org/xsd/imsss"
+                xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+                xsi:schemaLocation="http://www.imsglobal.org/xsd/imscp_v1p1 imscp_v1p1.xsd
+                                    http://www.adlnet.org/xsd/adlcp_v1p3 adlcp_v1p3.xsd
+                                    http://www.adlnet.org/xsd/adlseq_v1p3 adlseq_v1p3.xsd
+                                    http://www.adlnet.org/xsd/adlnav_v1p3 adlnav_v1p3.xsd
+                                    http://www.imsglobal.org/xsd/imsss imsss_v1p0.xsd">
+	<metadata>
+		<schema>ADL SCORM</schema>
+		<schemaversion>CAM 1.3</schemaversion>
+	</metadata>
+	<organizations default="B0">
+		<organization identifier="B0" adlseq:objectivesGlobalToSystem="false">
+			<title>TCS V1</title>
+			<item identifier="i1" identifierref="r1" isvisible="true">
+				<title>TCS Test V1</title>
+			</item>
+		</organization>
+	</organizations>
+	<resources>
+		<resource identifier="r1" type="webcontent" adlcp:scormType="sco" href="index.html">
+			<file href="index.html" />
+			<file href="js/questionss.js"/>
+			<file href="js/SCORM_API_wrapper.js"/>
+			<file href="css/cosmetic.cs"/>
+			<file href="interaction.js"/>
+			<file href="questions.js"/>
+		</resource>
+	</resources>
+</manifest>
